@@ -1,4 +1,4 @@
-# slogmulti
+# slogmulti (beta)
 
 [![ci](https://github.com/olekukonko/slogmulti/workflows/ci/badge.svg?branch=master)](https://github.com/olekukonko/slogmulti/actions?query=workflow%3Aci)
 [![Total views](https://img.shields.io/sourcegraph/rrc/github.com/olekukonko/slogmulti.svg)](https://sourcegraph.com/github.com/olekukonko/slogmulti)
