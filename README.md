@@ -223,6 +223,16 @@ func main() {
 }
 
 ```
+
+
+### Wrap IO Writer
+
+Convert any `io.Writer` to slog.Handler 
+
+```go
+
+
+```
 ### Error Handling
 
 Errors from handlers are sent to the `Errors()` channel:
