@@ -1,4 +1,4 @@
-# slogmulti (beta)
+# slogmulti
 
 [![ci](https://github.com/olekukonko/slogmulti/workflows/ci/badge.svg?branch=master)](https://github.com/olekukonko/slogmulti/actions?query=workflow%3Aci)
 [![Total views](https://img.shields.io/sourcegraph/rrc/github.com/olekukonko/slogmulti.svg)](https://sourcegraph.com/github.com/olekukonko/slogmulti)
@@ -110,6 +110,146 @@ func main() {
 }
 ```
 
+
+### Postgres Example 
+
+Here is a simple Postgres Example 
+
+```go
+
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/jackc/pgx/v5"
+	"github.com/oklog/ulid/v2"
+	"github.com/olekukonko/slogmulti"
+	"log/slog"
+	"os"
+	"time"
+)
+
+// PostgresHandler for sending logs to PostgreSQL
+type PostgresHandler struct {
+	conn *pgx.Conn
+}
+
+func NewPostgresHandler(dsn string) (*PostgresHandler, error) {
+	conn, err := pgx.Connect(context.Background(), dsn)
+	if err != nil {
+		return nil, err
+	}
+	h := &PostgresHandler{conn: conn}
+	_, err = conn.Exec(context.Background(), `
+		CREATE TABLE IF NOT EXISTS logs (
+			uid TEXT PRIMARY KEY,
+			timestamp TIMESTAMP,
+			level TEXT,
+			message TEXT,
+			attrs JSONB
+		)
+	`)
+	if err != nil {
+		conn.Close(context.Background())
+		return nil, fmt.Errorf("failed to create PostgreSQL table: %v", err)
+	}
+	return h, nil
+}
+
+func (h *PostgresHandler) Handle(ctx context.Context, r slog.Record) error {
+	attrs := extractAttrs(r)
+	data, err := json.Marshal(attrs)
+	if err != nil {
+		return fmt.Errorf("failed to marshal attrs: %v", err)
+	}
+	_, err = h.conn.Exec(ctx,
+		"INSERT INTO logs (uid, timestamp, level, message, attrs) VALUES ($1, $2, $3, $4, $5)",
+		ulid.Make().String(), r.Time, r.Level.String(), r.Message, data)
+	return err
+}
+
+func (h *PostgresHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return true
+}
+
+func (h *PostgresHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return h // We'll handle attrs in Handle method
+}
+
+func (h *PostgresHandler) WithGroup(name string) slog.Handler {
+	return h // Postgres doesn't need groups
+}
+
+func (h *PostgresHandler) Close() error {
+	return h.conn.Close(context.Background())
+}
+
+func extractAttrs(r slog.Record) map[string]interface{} {
+	attrs := make(map[string]interface{})
+	r.Attrs(func(a slog.Attr) bool {
+		switch a.Value.Kind() {
+		case slog.KindString:
+			attrs[a.Key] = a.Value.String()
+		case slog.KindInt64:
+			attrs[a.Key] = a.Value.Int64()
+		case slog.KindFloat64:
+			attrs[a.Key] = a.Value.Float64()
+		case slog.KindBool:
+			attrs[a.Key] = a.Value.Bool()
+		case slog.KindTime:
+			attrs[a.Key] = a.Value.Time()
+		case slog.KindAny:
+			if err, ok := a.Value.Any().(error); ok {
+				attrs[a.Key] = err.Error() // Convert error to string
+			} else {
+				attrs[a.Key] = a.Value.Any() // Fallback to raw value
+			}
+		default:
+			attrs[a.Key] = a.Value.String() // Safe fallback for unhandled kinds
+		}
+		return true
+	})
+	return attrs
+}
+
+func main() {
+	// Text handler for stdout
+	textHandler := slog.NewTextHandler(os.Stdout, nil)
+
+	// Postgres handler
+	postgresHandler, err := NewPostgresHandler("postgres://root:@localhost:26257/test")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize PostgreSQL: %v\n", err)
+		return
+	}
+
+	// Combine handlers
+	multiHandler := slogmulti.NewDefaultMultiHandler(textHandler, postgresHandler)
+	logger := slog.New(multiHandler)
+
+	type usr struct {
+		Username string `db:"username"`
+		Level    string `db:"level"`
+	}
+	// Example logs
+	logger.Info("Starting application", slog.String("version", "1.0"))
+	logger.Error("Something failed", slog.Any("error", errors.New("oops")))
+	logger.Error("Something struct",
+		slog.Any("err", errors.New("dancing")),
+		slog.Any("user", usr{Username: "test", Level: "info"}),
+	)
+
+	// Cleanup
+	time.Sleep(2 * time.Second)
+	if err := multiHandler.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error closing multiHandler: %v\n", err)
+	}
+}
+
+```
 ### Error Handling
 
 Errors from handlers are sent to the `Errors()` channel:
