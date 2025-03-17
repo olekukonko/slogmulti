@@ -1,0 +1,58 @@
+# .github/workflows/ci.yml
+name: CI
+
+# Controls when the workflow will run
+on:
+  # Triggers the workflow on push or pull request events for the "main" branch
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+  # Allows manual triggering from the Actions tab
+  workflow_dispatch:
+
+# A workflow run is made up of one or more jobs
+jobs:
+  build-and-test:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed
+    steps:
+      # Checks out your repository under $GITHUB_WORKSPACE
+      - uses: actions/checkout@v4
+
+      # Sets up the Go environment
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21' # Specify the Go version (slog requires Go 1.21+)
+
+      # Installs dependencies (optional if go.mod is well-managed)
+      - name: Install dependencies
+        run: go mod tidy
+
+      # Runs go fmt to check code formatting
+      - name: Check formatting
+        run: |
+          if [ -n "$(go fmt ./...)" ]; then
+            echo "Go code is not formatted. Run 'go fmt ./...' and commit the changes."
+            exit 1
+          fi
+
+      # Runs go vet for static analysis
+      - name: Run go vet
+        run: go vet ./...
+
+      # Runs tests with verbose output and coverage
+      - name: Run tests
+        run: go test -v -cover ./...
+
+      # Optionally upload coverage report (e.g., to Codecov)
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.out
+          token: ${{ secrets.CODECOV_TOKEN }} # Optional: Add this in GitHub secrets if using Codecov
+        if: success() # Only run if tests pass
