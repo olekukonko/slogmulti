@@ -35,9 +35,9 @@ func FnExtract(r slog.Record) map[string]interface{} {
 	return attrs
 }
 
-// FnCloseHandler closes the handler if it implements the io.Closer interface.
+// FnClose closes the handler if it implements the io.Closer interface.
 // It returns an error if the handler cannot be closed or if the handler does not support closing.
-func FnCloseHandler(handler slog.Handler) error {
+func FnClose(handler slog.Handler) error {
 	if closer, ok := handler.(io.Closer); ok {
 		return closer.Close()
 	}
