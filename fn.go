@@ -1,6 +1,9 @@
 package slogmulti
 
-import "log/slog"
+import (
+	"io"
+	"log/slog"
+)
 
 // FnExtract extracts the attributes from a slog.Record and returns them as a map.
 // The map's keys are the attribute keys, and the values are the corresponding attribute values.
@@ -30,4 +33,13 @@ func FnExtract(r slog.Record) map[string]interface{} {
 		return true
 	})
 	return attrs
+}
+
+// FnCloseHandler closes the handler if it implements the io.Closer interface.
+// It returns an error if the handler cannot be closed or if the handler does not support closing.
+func FnCloseHandler(handler slog.Handler) error {
+	if closer, ok := handler.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
