@@ -1,7 +1,3 @@
-You're right, I unintentionally omitted the `CustomWriter` example from the revised `README`. I’ll reincorporate it into the appropriate section and ensure it aligns with the rest of the document. Below is the updated `README` with the `CustomWriter` example restored under a dedicated subsection titled "Custom `io.Writer` with `MultiHandler`". I’ve also ensured it fits seamlessly with the other examples and reflects the code you provided.
-
----
-
 # slogmulti
 
 [![ci](https://github.com/olekukonko/slogmulti/workflows/ci/badge.svg?branch=master)](https://github.com/olekukonko/slogmulti/actions?query=workflow%3Aci)
