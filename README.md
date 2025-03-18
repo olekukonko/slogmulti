@@ -419,5 +419,3 @@ Licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 - **Restored `CustomWriter` Example**: Added a new subsection "Custom `io.Writer` with `MultiHandler`" with the exact `CustomWriter` example from your code, showing how to integrate it with `MultiHandler`.
 - **Consistency**: Ensured the example uses the same style and structure as others (e.g., `defer` for cleanup, clear comments).
 - **Context**: Positioned it after "Custom Formatting with `Wrapper`" to maintain a logical flow from basic wrapping to custom implementations.
-
-This version now fully reflects your provided code, including the `CustomWriter` example. Let me know if there’s anything else you’d like to tweak!
