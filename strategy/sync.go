@@ -7,22 +7,22 @@ import (
 	"os"
 )
 
-// SyncStrategy processes logs synchronously without batching or concurrency.
-type SyncStrategy struct {
+// Sync processes logs synchronously without batching or concurrency.
+type Sync struct {
 	errors chan<- error // Channel to propagate errors (borrowed from MultiHandler)
 }
 
-// NewSyncStrategy creates a new SyncStrategy.
-func NewSyncStrategy(errors chan<- error) *SyncStrategy {
-	return &SyncStrategy{errors: errors}
+// NewSyncStrategy creates a new Sync.
+func NewSyncStrategy(errors chan<- error) *Sync {
+	return &Sync{errors: errors}
 }
 
 // Process handles logs synchronously.
-func (ss *SyncStrategy) Process(ctx context.Context, r slog.Record, handlers []slog.Handler, errors chan<- error) {
+func (ss *Sync) Process(ctx context.Context, r slog.Record, handlers []slog.Handler, errors chan<- error) {
 	for _, h := range handlers {
 		if err := h.Handle(ctx, r); err != nil {
 			select {
-			case ss.errors <- err:
+			case errors <- err: // Use the passed errors channel
 			default:
 				fmt.Fprintf(os.Stderr, "[slogmulti] dropped error due to full channel: %v\n", err)
 			}
@@ -30,8 +30,8 @@ func (ss *SyncStrategy) Process(ctx context.Context, r slog.Record, handlers []s
 	}
 }
 
-// Flush is a no-op for SyncStrategy.
-func (ss *SyncStrategy) Flush() {}
+// Flush is a no-op for Sync.
+func (ss *Sync) Flush() {}
 
-// Close is a no-op for SyncStrategy.
-func (ss *SyncStrategy) Close() {}
+// Close is a no-op for Sync.
+func (ss *Sync) Close() {}

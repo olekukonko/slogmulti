@@ -16,17 +16,17 @@ const (
 // is reached or after a specified flush interval. Errors from handlers are collected
 // and can be retrieved via the Errors channel.
 type MultiHandler struct {
-	handlers []slog.Handler                // The underlying handlers to dispatch logs to
-	strategy strategy.MultiHandlerStrategy // Strategy for processing logs
-	errors   chan error                    // Channel to propagate errors
-	mu       sync.RWMutex                  // Protects handlers for concurrent access
+	handlers []slog.Handler   // The underlying handlers to dispatch logs to
+	strategy strategy.Handler // Strategy for processing logs
+	errors   chan error       // Channel to propagate errors
+	mu       sync.RWMutex     // Protects handlers for concurrent access
 }
 
 // MultiHandlerOption configures a MultiHandler during creation.
 type MultiHandlerOption func(*MultiHandler)
 
 // WithStrategy sets the log processing strategy.
-func WithStrategy(strategy strategy.MultiHandlerStrategy) MultiHandlerOption {
+func WithStrategy(strategy strategy.Handler) MultiHandlerOption {
 	return func(mh *MultiHandler) {
 		mh.strategy = strategy
 	}
@@ -67,8 +67,7 @@ func NewMultiHandler(opts ...MultiHandlerOption) *MultiHandler {
 		opt(mh)
 	}
 	if mh.strategy == nil {
-		// Default to AsyncBatchStrategy with the initial handlers
-		mh.strategy = strategy.NewAsyncBatchStrategy(mh.errors, mh.handlers)
+		mh.strategy = strategy.NewAsyncBatchStrategy() // Default strategy
 	}
 	return mh
 }
