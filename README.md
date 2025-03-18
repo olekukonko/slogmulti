@@ -413,9 +413,3 @@ Contributions are welcome! Please submit pull requests or open issues on the [Gi
 Licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ---
-
-### Changes Made
-
-- **Restored `CustomWriter` Example**: Added a new subsection "Custom `io.Writer` with `MultiHandler`" with the exact `CustomWriter` example from your code, showing how to integrate it with `MultiHandler`.
-- **Consistency**: Ensured the example uses the same style and structure as others (e.g., `defer` for cleanup, clear comments).
-- **Context**: Positioned it after "Custom Formatting with `Wrapper`" to maintain a logical flow from basic wrapping to custom implementations.
