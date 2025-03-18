@@ -2,61 +2,33 @@ package slogmulti
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"sync"
-	"time"
-
+	"github.com/olekukonko/slogmulti/strategy"
 	"log/slog"
+	"sync"
 )
 
 const (
-	DefaultFlushInterval = 1 * time.Second
-	DefaultBatchSize     = 10
-	DefaultQueueSize     = 1000
-	DefaultErrorSize     = 100
+	DefaultErrorSize = 100 // Default capacity of the error channel
 )
-
-// Ingress represents a log entry with context, record, and an optional error.
-type Ingress struct {
-	ctx context.Context
-	r   slog.Record
-	err error
-}
 
 // MultiHandler combines multiple slog handlers, batching logs for efficiency.
 // It queues log records and processes them in batches, either when the batch size
 // is reached or after a specified flush interval. Errors from handlers are collected
 // and can be retrieved via the Errors channel.
 type MultiHandler struct {
-	handlers      []slog.Handler // The underlying handlers to dispatch logs to
-	queue         chan Ingress   // Buffered channel for log entries
-	batchSize     int            // Maximum number of logs in a batch
-	flushInterval time.Duration  // Interval at which batches are flushed
-	wg            sync.WaitGroup // Wait group to ensure clean shutdown
-	errors        chan error     // Channel to propagate errors from handlers
+	handlers []slog.Handler                // The underlying handlers to dispatch logs to
+	strategy strategy.MultiHandlerStrategy // Strategy for processing logs
+	errors   chan error                    // Channel to propagate errors
+	mu       sync.RWMutex                  // Protects handlers for concurrent access
 }
 
 // MultiHandlerOption configures a MultiHandler during creation.
 type MultiHandlerOption func(*MultiHandler)
 
-// WithBatchSize sets the maximum number of log entries per batch.
-// If size <= 0, the default (10) is used.
-func WithBatchSize(size int) MultiHandlerOption {
+// WithStrategy sets the log processing strategy.
+func WithStrategy(strategy strategy.MultiHandlerStrategy) MultiHandlerOption {
 	return func(mh *MultiHandler) {
-		if size > 0 {
-			mh.batchSize = size
-		}
-	}
-}
-
-// WithFlushInterval sets the interval at which batches are flushed, even if not full.
-// If interval <= 0, the default (1 second) is used.
-func WithFlushInterval(interval time.Duration) MultiHandlerOption {
-	return func(mh *MultiHandler) {
-		if interval > 0 {
-			mh.flushInterval = interval
-		}
+		mh.strategy = strategy
 	}
 }
 
@@ -84,18 +56,20 @@ func WithErrorChannel(errChan chan error) MultiHandlerOption {
 // Example:
 //
 //	mh := NewMultiHandler(WithBatchSize(20), WithHandlers(h1, h2))
+//
+// NewMultiHandler creates a new MultiHandler with the given options.
 func NewMultiHandler(opts ...MultiHandlerOption) *MultiHandler {
 	mh := &MultiHandler{
-		handlers:      make([]slog.Handler, 0),
-		queue:         make(chan Ingress, DefaultQueueSize),
-		errors:        make(chan error, DefaultErrorSize), // Default error channel
-		batchSize:     DefaultBatchSize,
-		flushInterval: DefaultFlushInterval,
+		handlers: make([]slog.Handler, 0),
+		errors:   make(chan error, DefaultErrorSize),
 	}
 	for _, opt := range opts {
 		opt(mh)
 	}
-	mh.startWorkers()
+	if mh.strategy == nil {
+		// Default to AsyncBatchStrategy with the initial handlers
+		mh.strategy = strategy.NewAsyncBatchStrategy(mh.errors, mh.handlers)
+	}
 	return mh
 }
 
@@ -114,6 +88,8 @@ func NewDefaultMultiHandler(handlers ...slog.Handler) *MultiHandler {
 //
 //	mh.Add(h3, h4)
 func (mh *MultiHandler) Add(handlers ...slog.Handler) {
+	mh.mu.Lock()
+	defer mh.mu.Unlock()
 	mh.handlers = append(mh.handlers, handlers...)
 }
 
@@ -128,111 +104,68 @@ func (mh *MultiHandler) Errors() <-chan error {
 	return mh.errors
 }
 
-// startWorkers launches a goroutine to process queued log entries.
-// It batches logs and flushes them based on batch size or flush interval.
-func (mh *MultiHandler) startWorkers() {
-	mh.wg.Add(1)
-	go func() {
-		defer mh.wg.Done()
-		batch := make([]Ingress, 0, mh.batchSize)
-		ticker := time.NewTicker(mh.flushInterval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case entry, ok := <-mh.queue:
-				if !ok {
-					mh.flushBatch(batch)
-					close(mh.errors) // Close error channel when done
-					return
-				}
-				batch = append(batch, entry)
-				if len(batch) >= mh.batchSize {
-					mh.flushBatch(batch)
-					batch = batch[:0]
-				}
-			case <-ticker.C:
-				if len(batch) > 0 {
-					mh.flushBatch(batch)
-					batch = batch[:0]
-				}
-			}
-		}
-	}()
-}
-
-// flushBatch dispatches a batch of log entries to all handlers.
-// Errors from handlers are sent to the errors channel instead of just being logged.
-func (mh *MultiHandler) flushBatch(batch []Ingress) {
-	for _, h := range mh.handlers {
-		for _, entry := range batch {
-			// If the entry already has an error, propagate it
-			if entry.err != nil {
-				select {
-				case mh.errors <- entry.err:
-				default: // Drop if channel is full
-					fmt.Fprintf(os.Stderr, "[slogmulti] dropped error due to full channel: %v\n", entry.err)
-				}
-				continue
-			}
-			// Process the log entry and capture any handler error
-			if err := h.Handle(entry.ctx, entry.r); err != nil {
-				select {
-				case mh.errors <- err:
-				default: // Drop if channel is full
-					fmt.Fprintf(os.Stderr, "[slogmulti] dropped error due to full channel: %v\n", err)
-				}
-			}
-		}
-	}
-}
-
 // Handle queues a log record for asynchronous processing.
 // It returns nil immediately, with errors propagated via the Errors channel.
 func (mh *MultiHandler) Handle(ctx context.Context, r slog.Record) error {
-	mh.queue <- Ingress{ctx: ctx, r: r, err: nil}
+	mh.mu.RLock()
+	handlers := mh.handlers
+	mh.mu.RUnlock()
+	mh.strategy.Process(ctx, r, handlers, mh.errors)
 	return nil
 }
 
 // Enabled reports whether any handler is enabled for the given level.
 // For simplicity, it always returns true, delegating filtering to underlying handlers.
 func (mh *MultiHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	return true
+	mh.mu.RLock()
+	defer mh.mu.RUnlock()
+	for _, h := range mh.handlers {
+		if h.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
 }
 
 // WithAttrs returns a new MultiHandler with additional attributes applied to all handlers.
 func (mh *MultiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	mh.mu.RLock()
 	newHandlers := make([]slog.Handler, len(mh.handlers))
 	for i, h := range mh.handlers {
 		newHandlers[i] = h.WithAttrs(attrs)
 	}
+	mh.mu.RUnlock()
 	return NewMultiHandler(
 		WithHandlers(newHandlers...),
-		WithBatchSize(mh.batchSize),
-		WithFlushInterval(mh.flushInterval),
-		WithErrorChannel(mh.errors), // Preserve the same error channel
+		WithStrategy(mh.strategy),
+		WithErrorChannel(mh.errors),
 	)
 }
 
 // WithGroup returns a new MultiHandler with a group name applied to all handlers.
 func (mh *MultiHandler) WithGroup(name string) slog.Handler {
+	mh.mu.RLock()
 	newHandlers := make([]slog.Handler, len(mh.handlers))
 	for i, h := range mh.handlers {
 		newHandlers[i] = h.WithGroup(name)
 	}
+	mh.mu.RUnlock()
 	return NewMultiHandler(
 		WithHandlers(newHandlers...),
-		WithBatchSize(mh.batchSize),
-		WithFlushInterval(mh.flushInterval),
-		WithErrorChannel(mh.errors), // Preserve the same error channel
+		WithStrategy(mh.strategy),
+		WithErrorChannel(mh.errors),
 	)
+}
+
+// Flush triggers the strategy to flush any pending logs.
+func (mh *MultiHandler) Flush() {
+	mh.strategy.Flush()
 }
 
 // Close flushes any remaining logs and stops the worker.
 // It closes the error channel after all logs are processed.
 // Call this when the handler is no longer needed to ensure proper cleanup.
 func (mh *MultiHandler) Close() error {
-	close(mh.queue)
-	mh.wg.Wait()
+	mh.strategy.Close()
 	return nil
 }
