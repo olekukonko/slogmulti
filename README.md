@@ -309,9 +309,11 @@ func main() {
 Monitor errors from handlers:
 
 ```go
-for err := range mh.Errors() {
-	fmt.Fprintf(os.Stderr, "Handler error: %v\n", err)
-}
+go func(){
+    for err := range mh.Errors() {
+        fmt.Fprintf(os.Stderr, "Handler error: %v\n", err)
+    }
+}()
 ```
 
 ### Adding Attributes and Groups
@@ -376,10 +378,10 @@ logger.Info("Request processed", slog.Int("status", 200))
 
 ## Defaults
 
-- **Batch Size**: 10
-- **Flush Interval**: 1 second
-- **Queue Size**: 1000
-- **Error Channel Capacity**: 100
+- **Batch Size**: `10`
+- **Flush Interval**: `1 second`
+- **Queue Size**: `1000`
+- **Error Channel Capacity**: `100`
 
 ---
 
@@ -399,12 +401,6 @@ Run the tests with:
 ```bash
 go test -v
 ```
-
----
-
-## Contributing
-
-Contributions are welcome! Please submit pull requests or open issues on the [GitHub repository](https://github.com/olekukonko/slogmulti).
 
 ---
 
