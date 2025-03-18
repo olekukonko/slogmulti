@@ -93,6 +93,13 @@ func (abs *AsyncBatchStrategy) Flush() {
 }
 
 // Close stops the worker and flushes any remaining logs.
+func (abs *AsyncBatchStrategy) Reset(no int) {
+	abs.mu.Lock()
+	defer abs.mu.Unlock()
+	abs.queue = make(chan Ingress, no)
+}
+
+// Close stops the worker and flushes any remaining logs.
 func (abs *AsyncBatchStrategy) Close() {
 	close(abs.queue)
 	abs.wg.Wait()

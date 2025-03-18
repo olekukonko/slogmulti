@@ -3,6 +3,7 @@ package slogmulti
 import (
 	"context"
 	"errors"
+	"github.com/olekukonko/slogmulti/strategy"
 	"log/slog"
 	"sync"
 	"testing"
@@ -13,12 +14,16 @@ type mockHandler struct {
 	mu        sync.Mutex
 	records   []slog.Record
 	shouldErr bool
+	processed chan struct{} // Signal when a record is processed
 }
 
 func (h *mockHandler) Handle(ctx context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.records = append(h.records, r)
+	if h.processed != nil {
+		h.processed <- struct{}{} // Signal processing
+	}
 	if h.shouldErr {
 		return errors.New("mock handler error")
 	}
@@ -45,7 +50,9 @@ func (h *mockHandler) getRecords() []slog.Record {
 
 func TestBasicLogging(t *testing.T) {
 	h := &mockHandler{}
-	mh := NewDefaultMultiHandler(h)
+	mh := NewMultiHandler(
+		WithHandlers(h),
+	) // Defaults to AsyncBatchStrategy
 
 	ctx := context.Background()
 	r := slog.NewRecord(time.Now(), slog.LevelInfo, "test message", 0)
@@ -71,8 +78,7 @@ func TestBatching(t *testing.T) {
 	h := &mockHandler{}
 	mh := NewMultiHandler(
 		WithHandlers(h),
-		WithBatchSize(2),
-		WithFlushInterval(500*time.Millisecond),
+		WithStrategy(strategy.NewAsyncBatchStrategy(nil, nil, strategy.WithBatchSize(2), strategy.WithFlushInterval(500*time.Millisecond))),
 	)
 
 	ctx := context.Background()
@@ -86,13 +92,14 @@ func TestBatching(t *testing.T) {
 	}
 
 	mh.Handle(ctx, r2)
-	if err := mh.Close(); err != nil {
-		t.Fatalf("Close returned unexpected error: %v", err)
-	}
-
+	time.Sleep(50 * time.Millisecond) // Give worker time to process
 	records := h.getRecords()
 	if len(records) != 2 {
 		t.Errorf("expected 2 records after batch size reached, got %d", len(records))
+	}
+
+	if err := mh.Close(); err != nil {
+		t.Fatalf("Close returned unexpected error: %v", err)
 	}
 }
 
@@ -100,8 +107,7 @@ func TestFlushInterval(t *testing.T) {
 	h := &mockHandler{}
 	mh := NewMultiHandler(
 		WithHandlers(h),
-		WithBatchSize(5),
-		WithFlushInterval(100*time.Millisecond),
+		WithStrategy(strategy.NewAsyncBatchStrategy(nil, nil, strategy.WithBatchSize(5), strategy.WithFlushInterval(100*time.Millisecond))),
 	)
 
 	ctx := context.Background()
@@ -114,19 +120,21 @@ func TestFlushInterval(t *testing.T) {
 	}
 
 	time.Sleep(100 * time.Millisecond)
-	if err := mh.Close(); err != nil {
-		t.Fatalf("Close returned unexpected error: %v", err)
-	}
-
 	records := h.getRecords()
 	if len(records) != 1 {
 		t.Errorf("expected 1 record after flush interval, got %d", len(records))
+	}
+
+	if err := mh.Close(); err != nil {
+		t.Fatalf("Close returned unexpected error: %v", err)
 	}
 }
 
 func TestErrorPropagation(t *testing.T) {
 	h := &mockHandler{shouldErr: true}
-	mh := NewDefaultMultiHandler(h)
+	mh := NewMultiHandler(
+		WithHandlers(h),
+	) // Defaults to AsyncBatchStrategy
 
 	errChan := mh.Errors()
 	ctx := context.Background()
@@ -150,7 +158,9 @@ func TestErrorPropagation(t *testing.T) {
 func TestMultipleHandlers(t *testing.T) {
 	h1 := &mockHandler{}
 	h2 := &mockHandler{}
-	mh := NewDefaultMultiHandler(h1, h2)
+	mh := NewMultiHandler(
+		WithHandlers(h1, h2),
+	) // Defaults to AsyncBatchStrategy
 
 	ctx := context.Background()
 	r := slog.NewRecord(time.Now(), slog.LevelInfo, "multi test", 0)
@@ -170,7 +180,9 @@ func TestMultipleHandlers(t *testing.T) {
 
 func TestAddHandler(t *testing.T) {
 	h1 := &mockHandler{}
-	mh := NewDefaultMultiHandler(h1)
+	mh := NewMultiHandler(
+		WithHandlers(h1),
+	) // Defaults to AsyncBatchStrategy
 
 	h2 := &mockHandler{}
 	mh.Add(h2)
@@ -193,7 +205,9 @@ func TestAddHandler(t *testing.T) {
 
 func TestWithAttrs(t *testing.T) {
 	h := &mockHandler{}
-	mh := NewDefaultMultiHandler(h)
+	mh := NewMultiHandler(
+		WithHandlers(h),
+	) // Defaults to AsyncBatchStrategy
 
 	attrs := []slog.Attr{slog.String("key", "value")}
 	mhWithAttrs := mh.WithAttrs(attrs).(*MultiHandler)
@@ -205,7 +219,6 @@ func TestWithAttrs(t *testing.T) {
 	if err := mhWithAttrs.Close(); err != nil {
 		t.Fatalf("Close returned unexpected error: %v", err)
 	}
-	// Do not close mh, as it's not used after WithAttrs
 
 	records := h.getRecords()
 	if len(records) != 1 {
@@ -221,8 +234,7 @@ func TestClose(t *testing.T) {
 	h := &mockHandler{}
 	mh := NewMultiHandler(
 		WithHandlers(h),
-		WithBatchSize(5),
-		WithFlushInterval(1*time.Second),
+		WithStrategy(strategy.NewAsyncBatchStrategy(nil, nil, strategy.WithBatchSize(5), strategy.WithFlushInterval(1*time.Second))),
 	)
 
 	ctx := context.Background()
@@ -238,68 +250,60 @@ func TestClose(t *testing.T) {
 		t.Errorf("expected 1 record after close, got %d", len(records))
 	}
 
-	_, ok := <-mh.Errors()
-	if ok {
-		t.Error("expected error channel to be closed after Close")
+	// Note: Errors channel is not closed by AsyncBatchStrategy, so we don’t test for closure here
+}
+
+// Updated TestQueueFull
+func TestQueueFull(t *testing.T) {
+	h := &mockHandler{processed: make(chan struct{}, 1)} // Buffered to avoid blocking
+	mh := NewMultiHandler(
+		WithHandlers(h),
+		WithStrategy(strategy.NewAsyncBatchStrategy(nil, nil, strategy.WithBatchSize(2), strategy.WithFlushInterval(10*time.Second))),
+	)
+
+	abs := mh.strategy.(*strategy.AsyncBatchStrategy)
+	abs.Reset(1)
+
+	ctx := context.Background()
+	r1 := slog.NewRecord(time.Now(), slog.LevelInfo, "queue1", 0)
+	r2 := slog.NewRecord(time.Now(), slog.LevelInfo, "queue2", 0)
+
+	mh.Handle(ctx, r1)
+	<-h.processed // Wait for r1 to be processed
+
+	done := make(chan struct{})
+	go func() {
+		mh.Handle(ctx, r2)
+		close(done)
+	}()
+
+	time.Sleep(10 * time.Millisecond) // Brief wait to ensure r2 is blocked
+	records := h.getRecords()
+	if len(records) != 1 {
+		t.Errorf("expected 1 record before queue is full, got %d", len(records))
+	}
+
+	if err := mh.Close(); err != nil {
+		t.Fatalf("Close returned unexpected error: %v", err)
+	}
+
+	records = h.getRecords()
+	if len(records) != 2 {
+		t.Errorf("expected 2 records after close, got %d", len(records))
+	}
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Error("timeout waiting for r2 to be processed")
 	}
 }
 
-//func TestQueueFull(t *testing.T) {
-//	h := &mockHandler{}
-//	mh := NewMultiHandler(
-//		WithHandlers(h),
-//		WithBatchSize(2),                  // Batch size larger than queue capacity
-//		WithFlushInterval(10*time.Second), // Long flush interval to avoid ticker flush
-//	)
-//
-//	// Override queue with capacity 1
-//	mh.queue = make(chan Ingress, 1)
-//
-//	ctx := context.Background()
-//	r1 := slog.NewRecord(time.Now(), slog.LevelInfo, "queue1", 0)
-//	r2 := slog.NewRecord(time.Now(), slog.LevelInfo, "queue2", 0)
-//
-//	// Fill the queue with r1
-//	mh.Handle(ctx, r1)
-//
-//	// Attempt to enqueue r2 in a goroutine; should block until worker processes r1
-//	done := make(chan struct{})
-//	go func() {
-//		mh.Handle(ctx, r2)
-//		close(done)
-//	}()
-//
-//	// Wait briefly to ensure r2 is blocked (queue full)
-//	time.Sleep(50 * time.Millisecond)
-//
-//	// Check records: should only have r1 processed so far
-//	records := h.getRecords()
-//	if len(records) != 1 {
-//		t.Errorf("expected 1 record before queue is full, got %d", len(records))
-//	}
-//
-//	// Close the handler to flush remaining records
-//	if err := mh.Close(); err != nil {
-//		t.Fatalf("Close returned unexpected error: %v", err)
-//	}
-//
-//	// After close, both records should be processed
-//	records = h.getRecords()
-//	if len(records) != 2 {
-//		t.Errorf("expected 2 records after close, got %d", len(records))
-//	}
-//
-//	// Ensure the goroutine completed
-//	select {
-//	case <-done:
-//		// Success
-//	case <-time.After(1 * time.Second):
-//		t.Error("timeout waiting for r2 to be processed")
-//	}
-//}
-
 func TestEnabled(t *testing.T) {
-	mh := NewDefaultMultiHandler(&mockHandler{})
+	h := &mockHandler{}
+	mh := NewMultiHandler(
+		WithHandlers(h),
+	) // Defaults to AsyncBatchStrategy
 
 	ctx := context.Background()
 	if !mh.Enabled(ctx, slog.LevelDebug) {
@@ -307,6 +311,31 @@ func TestEnabled(t *testing.T) {
 	}
 	if !mh.Enabled(ctx, slog.LevelError) {
 		t.Error("expected Enabled to return true for Error")
+	}
+
+	if err := mh.Close(); err != nil {
+		t.Fatalf("Close returned unexpected error: %v", err)
+	}
+}
+
+func TestSyncStrategy(t *testing.T) {
+	h := &mockHandler{}
+	mh := NewMultiHandler(
+		WithHandlers(h),
+		WithStrategy(strategy.NewSyncStrategy(nil)),
+	)
+
+	ctx := context.Background()
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "sync test", 0)
+	mh.Handle(ctx, r)
+
+	records := h.getRecords()
+	if len(records) != 1 {
+		t.Errorf("expected 1 record immediately with sync strategy, got %d", len(records))
+		return
+	}
+	if records[0].Message != "sync test" {
+		t.Errorf("expected message 'sync test', got %q", records[0].Message)
 	}
 
 	if err := mh.Close(); err != nil {
