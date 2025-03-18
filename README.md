@@ -4,27 +4,26 @@
 [![Total views](https://img.shields.io/sourcegraph/rrc/github.com/olekukonko/slogmulti.svg)](https://sourcegraph.com/github.com/olekukonko/slogmulti)
 [![Godoc](https://godoc.org/github.com/olekukonko/slogmulti?status.svg)](https://godoc.org/github.com/olekukonko/slogmulti)
 
-`slogmulti` is a Go package that extends the standard `log/slog` package by providing a `MultiHandler` to combine multiple `slog.Handler` instances into a single, efficient handler. It batches log entries for performance, processes them asynchronously, and propagates errors through a dedicated channel. Additionally, it includes a `Wrapper` type to adapt any `io.Writer` into a `slog.Handler`, with customizable formatting.
+`slogmulti` is a Go package that enhances the standard `log/slog` package with a `MultiHandler` to combine multiple `slog.Handler` instances into a single, efficient handler. It supports batching and asynchronous processing under the hood, with errors propagated through a dedicated channel. Additionally, it provides a `Wrapper` type to turn any `io.Writer` into a `slog.Handler` with customizable formatting.
 
-This package is ideal for applications requiring logging to multiple destinations (e.g., console, files, databases) while maintaining high throughput and clean error handling.
+This package is perfect for logging to multiple destinations (e.g., console, files, databases) with high performance and straightforward error handling, without requiring users to manage strategies unless desired.
 
 ---
 
 ## Features
 
-- **Multiple Handlers**: Dispatch logs to several `slog.Handler` instances concurrently.
-- **Batching**: Group logs into batches, configurable by size or flush interval, to minimize overhead.
-- **Asynchronous Processing**: Queue logs for background processing, enhancing performance.
-- **Error Propagation**: Collect and access errors from handlers via a dedicated channel.
-- **Dynamic Configuration**: Add handlers or adjust settings at runtime.
-- **Custom Formatting**: Use the `Wrapper` type to format logs with custom logic over any `io.Writer`.
-- **Clean Shutdown**: Ensure all queued logs are processed before termination.
+- **Multiple Handlers**: Send logs to several `slog.Handler` instances at once.
+- **Efficient Processing**: Default asynchronous batching for performance (configurable if needed).
+- **Error Propagation**: Collect handler errors via a dedicated channel.
+- **Dynamic Updates**: Add handlers at runtime with ease.
+- **Custom Formatting**: Use `Wrapper` to adapt `io.Writer` with custom log formats.
+- **Simple Shutdown**: Ensure all logs are processed with a single `Close()` call.
 
 ---
 
 ## Installation
 
-Install `slogmulti` using:
+Install `slogmulti` with:
 
 ```bash
 go get github.com/olekukonko/slogmulti
@@ -38,7 +37,7 @@ Requires Go 1.21 or later due to its dependency on `log/slog`.
 
 ### Basic Example
 
-Log to multiple destinations with default settings:
+Log to multiple destinations with minimal setup:
 
 ```go
 package main
@@ -54,27 +53,144 @@ func main() {
 	consoleHandler := slog.NewTextHandler(os.Stdout, nil)
 	jsonHandler := slog.NewJSONHandler(os.Stderr, nil)
 
-	// Create a MultiHandler with defaults
+	// Combine handlers with defaults
 	mh := slogmulti.NewDefaultMultiHandler(consoleHandler, jsonHandler)
 	logger := slog.New(mh)
 
 	// Log a message
 	logger.Info("Hello, world!")
 
-	// Ensure all logs are flushed
+	// Clean up
 	mh.Close()
 }
 ```
 
-### Custom Configuration
+### Adding Handlers Dynamically
 
-Customize batching and error handling:
+Add more handlers after creation:
 
 ```go
 package main
 
 import (
-	"context"
+	"log/slog"
+	"os"
+	"github.com/olekukonko/slogmulti"
+)
+
+func main() {
+	// Start with one handler
+	consoleHandler := slog.NewTextHandler(os.Stdout, nil)
+	mh := slogmulti.NewDefaultMultiHandler(consoleHandler)
+	logger := slog.New(mh)
+
+	logger.Info("Initial log")
+
+	// Add another handler later
+	jsonHandler := slog.NewJSONHandler(os.Stderr, nil)
+	mh.Add(jsonHandler)
+
+	logger.Info("Log to both handlers")
+
+	mh.Close()
+}
+```
+
+### Error Handling
+
+Monitor errors from handlers:
+
+```go
+package main
+
+import (
+	"fmt"
+	"log/slog"
+	"os"
+	"github.com/olekukonko/slogmulti"
+)
+
+func main() {
+	consoleHandler := slog.NewTextHandler(os.Stdout, nil)
+	mh := slogmulti.NewDefaultMultiHandler(consoleHandler)
+	logger := slog.New(mh)
+
+	// Handle errors asynchronously
+	go func() {
+		for err := range mh.Errors() {
+			fmt.Fprintf(os.Stderr, "Log error: %v\n", err)
+		}
+	}()
+
+	logger.Info("Starting up")
+	mh.Close()
+}
+```
+
+### Custom Strategy (Optional)
+
+For advanced users, customize processing with a strategy:
+
+```go
+package main
+
+import (
+	"log/slog"
+	"os"
+	"time"
+	"github.com/olekukonko/slogmulti"
+	"github.com/olekukonko/slogmulti/strategy"
+)
+
+func main() {
+	consoleHandler := slog.NewTextHandler(os.Stdout, nil)
+	jsonHandler := slog.NewJSONHandler(os.Stderr, nil)
+
+	// Custom async strategy
+	mh := slogmulti.NewMultiHandler(
+		slogmulti.WithHandlers(consoleHandler, jsonHandler),
+		slogmulti.WithStrategy(strategy.NewAsyncBatchStrategy(
+			strategy.WithBatchSize(20),
+			strategy.WithFlushInterval(500*time.Millisecond),
+		)),
+	)
+	logger := slog.New(mh)
+
+	logger.Info("Custom batching")
+	mh.Close()
+}
+```
+
+### Wrapping an `io.Writer`
+
+Turn any `io.Writer` into a handler:
+
+```go
+package main
+
+import (
+	"log/slog"
+	"os"
+	"github.com/olekukonko/slogmulti"
+)
+
+func main() {
+	handler := slogmulti.NewWrapper(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
+	logger := slog.New(handler)
+
+	logger.Info("Wrapped writer log")
+	slogmulti.FnClose(handler)
+}
+```
+
+### Custom Formatting with `Wrapper`
+
+Use a custom format:
+
+```go
+package main
+
+import (
 	"fmt"
 	"log/slog"
 	"os"
@@ -83,42 +199,54 @@ import (
 )
 
 func main() {
-	// Define handlers
-	consoleHandler := slog.NewTextHandler(os.Stdout, nil)
-	jsonHandler := slog.NewJSONHandler(os.Stderr, nil)
+	customFormatter := func(r slog.Record) ([]byte, error) {
+		return []byte(fmt.Sprintf("CUSTOM: %s [%s] %s\n", r.Time.Format(time.RFC3339), r.Level, r.Message)), nil
+	}
 
-	// Configure MultiHandler
-	mh := slogmulti.NewMultiHandler(
-		slogmulti.WithHandlers(consoleHandler, jsonHandler),
-		slogmulti.WithBatchSize(20),              // Batch up to 20 logs
-		slogmulti.WithFlushInterval(500*time.Millisecond), // Flush every 500ms
-	)
+	handler := slogmulti.NewWrapper(os.Stdout, nil)
+	handler.(*slogmulti.Wrapper).SetFormat(customFormatter)
+	logger := slog.New(handler)
 
+	logger.Info("Custom format log")
+	slogmulti.FnClose(handler)
+}
+```
+
+### Combining `Wrapper` with `MultiHandler`
+
+Log to multiple custom writers:
+
+```go
+package main
+
+import (
+	"fmt"
+	"log/slog"
+	"os"
+	"github.com/olekukonko/slogmulti"
+)
+
+type CustomWriter struct{}
+
+func (w *CustomWriter) Write(p []byte) (n int, err error) {
+	return fmt.Fprintf(os.Stdout, "Custom: %s", p)
+}
+
+func main() {
+	h1 := slogmulti.NewWrapper(os.Stdout, nil)
+	h2 := slogmulti.NewWrapper(&CustomWriter{}, nil)
+
+	mh := slogmulti.NewDefaultMultiHandler(h1, h2)
 	logger := slog.New(mh)
 
-	// Log with context
-	ctx := context.Background()
-	logger.InfoContext(ctx, "Application starting")
-
-	// Handle errors in a goroutine
-	go func() {
-		for err := range mh.Errors() {
-			fmt.Fprintf(os.Stderr, "Log error: %v\n", err)
-		}
-	}()
-
-	// Dynamically add a handler
-	debugHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
-	mh.Add(debugHandler)
-
-	// Shutdown cleanly
+	logger.Info("Dual writer log")
 	mh.Close()
 }
 ```
 
 ### PostgreSQL Example
 
-Log to PostgreSQL and console simultaneously:
+Log to a database and console:
 
 ```go
 package main
@@ -136,7 +264,6 @@ import (
 	"time"
 )
 
-// PostgresHandler logs to a PostgreSQL database
 type PostgresHandler struct {
 	conn *pgx.Conn
 }
@@ -163,7 +290,11 @@ func NewPostgresHandler(dsn string) (*PostgresHandler, error) {
 }
 
 func (h *PostgresHandler) Handle(ctx context.Context, r slog.Record) error {
-	attrs := slogmulti.FnExtract(r)
+	attrs := make(map[string]interface{})
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
 	data, err := json.Marshal(attrs)
 	if err != nil {
 		return fmt.Errorf("marshal attrs: %v", err)
@@ -180,154 +311,22 @@ func (h *PostgresHandler) WithGroup(name string) slog.Handler                { r
 func (h *PostgresHandler) Close() error                                      { return h.conn.Close(context.Background()) }
 
 func main() {
-	// Console handler
 	textHandler := slog.NewTextHandler(os.Stdout, nil)
-
-	// PostgreSQL handler
 	pgHandler, err := NewPostgresHandler("postgres://root:@localhost:26257/test")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "PostgreSQL init failed: %v\n", err)
 		return
 	}
 
-	// Combine handlers
 	mh := slogmulti.NewDefaultMultiHandler(textHandler, pgHandler)
 	logger := slog.New(mh)
 
-	// Example logs
 	logger.Info("App started", slog.String("version", "1.0"))
 	logger.Error("Failure", slog.Any("error", errors.New("oops")))
 
-	// Wait briefly and cleanup
-	time.Sleep(2 * time.Second)
-	if err := mh.Close(); err != nil {
-		fmt.Fprintf(os.Stderr, "Close error: %v\n", err)
-	}
+	time.Sleep(100 * time.Millisecond)
+	mh.Close()
 }
-```
-
-### Wrapping an `io.Writer`
-
-Convert any `io.Writer` into a `slog.Handler`:
-
-```go
-package main
-
-import (
-	"log/slog"
-	"os"
-	"github.com/olekukonko/slogmulti"
-)
-
-func main() {
-	// Wrap os.Stdout
-	handler := slogmulti.NewWrapper(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
-	defer slogmulti.FnClose(handler)
-
-	logger := slog.New(handler)
-	logger.Info("App started", slog.String("version", "1.0"))
-}
-```
-
-### Custom Formatting with `Wrapper`
-
-Define a custom log format:
-
-```go
-package main
-
-import (
-	"fmt"
-	"log/slog"
-	"os"
-	"time"
-	"github.com/olekukonko/slogmulti"
-)
-
-func main() {
-	// Custom formatter
-	customFormatter := func(r slog.Record) ([]byte, error) {
-		return []byte(fmt.Sprintf("CUSTOM: %s [%s] %s\n", r.Time.Format(time.RFC3339), r.Level, r.Message)), nil
-	}
-
-	// Create and configure wrapper
-	handler := slogmulti.NewWrapper(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
-	handler.(*slogmulti.Wrapper).SetFormat(customFormatter)
-
-	logger := slog.New(handler)
-	logger.Info("Custom log message")
-}
-```
-
-### Custom `io.Writer` with `MultiHandler`
-
-Use a custom `io.Writer` with `MultiHandler`:
-
-```go
-package main
-
-import (
-	"fmt"
-	"log/slog"
-	"os"
-	"github.com/olekukonko/slogmulti"
-)
-
-// CustomWriter is a custom io.Writer that writes to os.Stdout.
-type CustomWriter struct{}
-
-// Write implements the io.Writer interface.
-func (w *CustomWriter) Write(p []byte) (n int, err error) {
-	return fmt.Fprintf(os.Stdout, "%s", p)
-}
-
-func main() {
-	// Wrap os.Stdout
-	h1 := slogmulti.NewWrapper(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
-	defer slogmulti.FnClose(h1)
-
-	// Wrap a custom writer
-	customWriter := &CustomWriter{}
-	h2 := slogmulti.NewWrapper(customWriter, &slog.HandlerOptions{Level: slog.LevelDebug})
-	defer slogmulti.FnClose(h2)
-
-	// Combine into MultiHandler
-	mh := slogmulti.NewDefaultMultiHandler(h1, h2)
-	defer mh.Close()
-
-	logger := slog.New(mh)
-
-	// Example logs
-	logger.Info("App started", slog.String("version", "1.0"))
-	logger.Error("Error occurred", slog.Any("error", fmt.Errorf("something went wrong")))
-	logger.WithGroup("request").Info("Request received", slog.String("method", "GET"), slog.Int("status", 200))
-}
-```
-
-### Error Handling
-
-Monitor errors from handlers:
-
-```go
-go func(){
-    for err := range mh.Errors() {
-        fmt.Fprintf(os.Stderr, "Handler error: %v\n", err)
-    }
-}()
-```
-
-### Adding Attributes and Groups
-
-Enhance logs with attributes or groups:
-
-```go
-mhWithAttrs := mh.WithAttrs([]slog.Attr{slog.String("app", "myapp")})
-logger = slog.New(mhWithAttrs)
-logger.Info("Log with attributes")
-
-mhWithGroup := mh.WithGroup("request")
-logger = slog.New(mhWithGroup)
-logger.Info("Request processed", slog.Int("status", 200))
 ```
 
 ---
@@ -336,67 +335,70 @@ logger.Info("Request processed", slog.Int("status", 200))
 
 ### Types
 
-- **`MultiHandler`**: Manages multiple handlers with batching and error propagation.
-- **`Ingress`**: Internal log entry with context, record, and optional error.
-- **`Wrapper`**: Adapts an `io.Writer` into a `slog.Handler` with customizable formatting.
+- **`MultiHandler`**: Combines multiple handlers with default async batching.
+- **`Wrapper`**: Adapts an `io.Writer` into a `slog.Handler`.
 
 ### Functions
 
-- **`NewMultiHandler(...MultiHandlerOption) *MultiHandler`**: Creates a `MultiHandler` with custom options.
-- **`NewDefaultMultiHandler(...slog.Handler) *MultiHandler`**: Creates a `MultiHandler` with default settings.
-- **`NewWrapper(w io.Writer, opts *slog.HandlerOptions) slog.Handler`**: Wraps an `io.Writer` into a handler.
-- **`FnExtract(r slog.Record) map[string]interface{}`**: Extracts attributes from a record.
-- **`FnClose(handler slog.Handler) error`**: Closes a handler if it implements `io.Closer`.
+- **`NewMultiHandler(...MultiHandlerOption) *MultiHandler`**: Creates a custom `MultiHandler`.
+- **`NewDefaultMultiHandler(...slog.Handler) *MultiHandler`**: Creates a `MultiHandler` with default async batching.
+- **`NewWrapper(w io.Writer, opts *slog.HandlerOptions) slog.Handler`**: Wraps an `io.Writer`.
+- **`FnClose(handler slog.Handler) error`**: Closes a handler if it supports `io.Closer`.
 
 ### Options for `MultiHandler`
 
-- **`WithHandlers(...slog.Handler)`**: Sets the handlers.
-- **`WithBatchSize(int)`**: Sets max batch size (default: 10).
-- **`WithFlushInterval(time.Duration)`**: Sets flush interval (default: 1s).
+- **`WithHandlers(...slog.Handler)`**: Sets initial handlers.
+- **`WithStrategy(strategy.Handler)`**: Sets a custom strategy (e.g., `strategy.NewAsyncBatchStrategy`).
 - **`WithErrorChannel(chan error)`**: Sets a custom error channel (default: capacity 100).
 
 ### `MultiHandler` Methods
 
 - **`Add(...slog.Handler)`**: Adds handlers dynamically.
 - **`Errors() <-chan error`**: Returns the error channel.
-- **`Handle(ctx context.Context, r slog.Record) error`**: Queues a log for processing.
-- **`Enabled(ctx context.Context, level slog.Level) bool`**: Always `true`, delegates filtering to handlers.
-- **`WithAttrs(attrs []slog.Attr) slog.Handler`**: Adds attributes to all handlers.
-- **`WithGroup(name string) slog.Handler`**: Applies a group name to all handlers.
-- **`Close() error`**: Flushes logs and shuts down.
+- **`Handle(ctx context.Context, r slog.Record) error`**: Queues a log.
+- **`Enabled(ctx context.Context, level slog.Level) bool`**: Delegates to handlers.
+- **`WithAttrs(attrs []slog.Attr) slog.Handler`**: Adds attributes.
+- **`WithGroup(name string) slog.Handler`**: Adds a group.
+- **`Flush()`**: Flushes pending logs.
+- **`Close() error`**: Flushes and shuts down.
 
 ### `Wrapper` Methods
 
 - **`SetFormat(format WrapperFormatFunc)`**: Sets a custom formatter.
 - **`Handle(ctx context.Context, r slog.Record) error`**: Writes formatted logs.
-- **`Enabled(ctx context.Context, level slog.Level) bool`**: Checks level against options.
+- **`Enabled(ctx context.Context, level slog.Level) bool`**: Checks level.
 - **`WithAttrs(attrs []slog.Attr) slog.Handler`**: Adds attributes.
-- **`WithGroup(name string) slog.Handler`**: Adds a group name.
-- **`Close() error`**: Closes the writer if it’s an `io.Closer`.
+- **`WithGroup(name string) slog.Handler`**: Adds a group.
+- **`Close() error`**: Closes the writer if applicable.
+
+### Strategy (Optional)
+
+- **`strategy.NewAsyncBatchStrategy(...AsyncBatchStrategyOption) *strategy.Async`**: Custom async batching.
+- **`strategy.NewSyncStrategy(errors chan<- error) *strategy.Sync`**: Synchronous processing.
+- Options: `strategy.WithBatchSize(int)`, `strategy.WithFlushInterval(time.Duration)`.
 
 ---
 
 ## Defaults
 
-- **Batch Size**: `10`
-- **Flush Interval**: `1 second`
-- **Queue Size**: `1000`
+- **Batch Size**: `10` (async strategy)
+- **Flush Interval**: `1 second` (async strategy)
+- **Queue Size**: `1000` (async strategy)
 - **Error Channel Capacity**: `100`
 
 ---
 
 ## Notes
 
-- **Asynchronous Nature**: Logs are processed in the background. Call `Close()` to flush remaining logs.
-- **Error Dropping**: If the error channel is full, errors are dropped and logged to `os.Stderr`.
-- **Level Filtering**: `MultiHandler.Enabled` always returns `true`, relying on underlying handlers.
-- **Thread Safety**: `MultiHandler` is safe for concurrent use; `Wrapper` depends on the underlying `io.Writer`.
+- **Default Behavior**: `NewDefaultMultiHandler` uses async batching; use `WithStrategy` for sync or custom behavior.
+- **Error Handling**: Errors are dropped if the channel is full, logged to `os.Stderr`.
+- **Thread Safety**: `MultiHandler` is concurrent-safe; `Wrapper` depends on the `io.Writer`.
 
 ---
 
 ## Testing
 
-Run the tests with:
+Run tests with:
 
 ```bash
 go test -v
@@ -406,6 +408,4 @@ go test -v
 
 ## License
 
-Licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
----
+MIT License. See [LICENSE](LICENSE).
